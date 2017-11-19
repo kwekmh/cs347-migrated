@@ -17,6 +17,7 @@
 
 typedef struct Context {
   std::vector<int> local_sockets;
+  std::vector<MigrateServer *> servers;
 } Context;
 
 typedef struct LocalDaemonSocket {

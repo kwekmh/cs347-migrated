@@ -279,11 +279,21 @@ void * StartHeartbeatSender(void *c) {
 
   std::stringstream ss;
 
-  ss << "ALIVE " << GetIdentifier();
+  // This is for testing only and will be removed once the state dissemination logic is implemented
 
-  std::string message = ss.str();
+  int i = 1;
+
+  std::string message;
 
   while (1) {
+    // TESTING CODE
+    ss.str("");
+    ss.clear();
+    ss << "STATE " << GetIdentifier() << " 10000 " << i++ << " AAAAA";
+    // END OF TESTING CODE
+
+    message = ss.str();
+
     if (sendto(sock, message.c_str(), message.length(), 0, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
       perror("StartHeartbeatSender() sendto");
       exit(1);
@@ -296,6 +306,7 @@ void * StartHeartbeatSender(void *c) {
 
 void * StartHeartbeatListener(void *c) {
   std::cout << "Starting Heartbeat Listener" << std::endl;
+  Context *context = (Context *) c;
 
   struct sockaddr_in addr;
 
@@ -339,9 +350,13 @@ void * StartHeartbeatListener(void *c) {
     }
     buf[in_bytes] = '\0';
     std::cout << "MSG: " << buf << std::endl;
-    if (in_bytes > 5 && strncmp(buf, "ALIVE", 5) == 0) {
+    if (in_bytes > 5 && strncmp(buf, "STATE", 5) == 0) {
       std::stringstream ident_ss;
+      std::stringstream service_ss;
+      std::stringstream conn_ident_ss;
       int i;
+      char *state_data;
+
       for (i = 6; i < in_bytes; i++) {
         if (buf[i] != ' ') {
           ident_ss << buf[i];
@@ -350,9 +365,86 @@ void * StartHeartbeatListener(void *c) {
         }
       }
 
-      std::string ident = ident_ss.str();
+      i++;
 
-      std::cout << "Received heartbeat message from " << ident << std::endl;
+      for (; i < in_bytes; i++) {
+        if (buf[i] != ' ') {
+          service_ss << buf[i];
+        } else {
+          break;
+        }
+      }
+
+      i++;
+
+      for (; i < in_bytes; i++) {
+        if (buf[i] != ' ') {
+          conn_ident_ss << buf[i];
+        } else {
+          break;
+        }
+      }
+
+      i++;
+
+      if (in_bytes > i + 1) {
+        int sz = in_bytes - i;
+        state_data = new char[sz];
+        int j;
+        for (j = 0; i < in_bytes; i++, j++) {
+          state_data[j] = buf[i];
+        }
+      }
+
+      std::string ident = ident_ss.str();
+      int service_identifier = std::stoi(service_ss.str());
+      int connection_identifier = std::stoi(conn_ident_ss.str());
+
+      // DEBUG CODE FOR CHECKING STATE OF SERVERS
+      std::vector<MigrateServer *>::iterator debug_it;
+      std::vector<int>::iterator debug_serv_it;
+      std::vector<Connection *>::iterator debug_conn_it;
+      MigrateServer *debug_s;
+      std::vector<int> debug_services;
+      std::vector<Connection *> * debug_conns;
+      Connection *debug_c;
+
+      std::cout << "Servers:" << std::endl;
+
+      for (debug_it = context->servers.begin(); debug_it != context->servers.end(); debug_it++) {
+        debug_s = *debug_it;
+        std::cout << debug_s->GetIdentifier() << std::endl;
+        std::cout << "------------------------" << std::endl;
+        debug_services = debug_s->GetServices();
+        for (debug_serv_it = debug_services.begin(); debug_serv_it != debug_services.end(); debug_serv_it++) {
+          std::cout << *debug_serv_it << std::endl << "---------" << std::endl;
+          debug_conns = debug_s->GetConnections(*debug_serv_it);
+          for (debug_conn_it = debug_conns->begin(); debug_conn_it != debug_conns->end(); debug_conn_it++) {
+            debug_c = *debug_conn_it;
+            std::cout << debug_c->GetServiceIdentifier() << ", " << debug_c->GetConnectionIdentifier() << ", " << debug_c->GetState() << std::endl;
+          }
+        }
+      }
+      // END OF DEBUG CODE
+
+      MigrateServer *server = NULL;
+
+      std::vector<MigrateServer *>::iterator it;
+
+      for (it = context->servers.begin(); it != context->servers.end(); it++) {
+        if ((*it)->GetIdentifier() == ident) {
+          server = *it;
+          break;
+        }
+      }
+
+      if (server == NULL) {
+        server = new MigrateServer(ident);
+        context->servers.push_back(server);
+      }
+
+      std::cout << "Adding new connection " << service_identifier << " " << connection_identifier << " " << state_data << std::endl;
+      server->AddOrUpdateConnection(service_identifier, connection_identifier, state_data);
     }
   }
 
@@ -367,10 +459,16 @@ void InitServer(Context *context) {
   pthread_create(&hb_sender_pthread, NULL, StartHeartbeatSender, (void *) context);
   pthread_create(&hb_listener_pthread, NULL, StartHeartbeatListener, (void *) context);
   pthread_create(&local_daemon_pthread, NULL, StartLocalDaemon, (void *) context);
+
+  pthread_join(hb_sender_pthread, NULL);
+  pthread_join(hb_listener_pthread, NULL);
+  pthread_join(local_daemon_pthread, NULL);
 }
 
 int main() {
   Context *context = new Context;
+  std::vector<MigrateServer *> servers;
+  context->servers = servers;
   InitServer(context);
   return 0;
 }
