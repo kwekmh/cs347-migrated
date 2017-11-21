@@ -15,8 +15,14 @@
 #define DAEMON_MAX_CONNECTIONS 500
 #define SOCK_BUF_MAX_SIZE 960
 
+#include <vector>
+#include <unordered_map>
+
+#include "service.h"
+
 typedef struct Context {
   std::vector<int> local_sockets;
+  std::unordered_map<int, Service *> local_services;
   std::vector<MigrateServer *> servers;
 } Context;
 

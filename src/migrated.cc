@@ -19,6 +19,8 @@
 
 #include "migrated.h"
 #include "neighbourhood.h"
+#include "service.h"
+#include "statedata.h"
 
 #ifndef HOST_NAME_MAX
 #define HOST_NAME_MAX 255
@@ -132,6 +134,7 @@ int AwaitSocketMessages(int sock, int *fds, int fd_count) {
 
 void * HandleLocalDaemonConnection(void * s) {
   LocalDaemonSocket *socket_struct = (LocalDaemonSocket *) s;
+  Context *context = socket_struct->context;
 
   char buf[MSG_BUFFER_SIZE];
 
@@ -176,13 +179,89 @@ void * HandleLocalDaemonConnection(void * s) {
       for (i = 0; i < rcvd_fd_count; i++) {
         std::cout << "Desciptor " << i << ": " << fds[i] << std::endl;
       }
-    } else if (strncmp(buf, "SOCKET", in_bytes) == 0) {
+    } else if (in_bytes > 6 && strncmp(buf, "SOCKET", 6) == 0) {
       int fd;
       if ((fd = AwaitSocketMessage(socket_struct->sock)) < 0) {
         perror("HandleLocalDaemonConnection() AwaitsocketMessage");
       } else {
         std::cout << "Received descriptor " << fd << std::endl;
         socket_struct->context->local_sockets.push_back(fd);
+      }
+    } else if (in_bytes > 5 && strncmp(buf, "STATE", 5) == 0) {
+      // State information received from application
+
+      std::stringstream service_ss;
+      std::stringstream conn_ident_ss;
+      StateData *state_data;
+      char *state_data_buf;
+      int sz;
+
+      int i;
+
+      for (i = 6; i < in_bytes; i++) {
+        if (buf[i] != ' ') {
+          service_ss << buf[i];
+        } else {
+          break;
+        }
+      }
+
+      i++;
+
+      for (; i < in_bytes; i++) {
+        if (buf[i] != ' ') {
+          conn_ident_ss << buf[i];
+        } else {
+          break;
+        }
+      }
+
+      i++;
+
+      if (in_bytes > i + 1) {
+        sz = in_bytes - i;
+        state_data_buf = new char[sz];
+        int j;
+        for (j = 0; i < in_bytes; i++, j++) {
+          state_data_buf[j] = buf[i];
+        }
+      }
+
+      state_data = new StateData(state_data_buf, sz);
+
+      int service_identifier = std::stoi(service_ss.str());
+      int connection_identifier = std::stoi(conn_ident_ss.str());
+
+      Service *service;
+      auto service_it = context->local_services.find(service_identifier);
+      if (service_it == context->local_services.end()) {
+        service = new Service(service_identifier);
+        context->local_services[service_identifier] = service;
+      } else {
+        service = service_it->second;
+      }
+
+      service->AddClient(connection_identifier, state_data);
+      std::cout << "Added client to service " << service_identifier << ": " << connection_identifier << ", " << state_data->GetData() << std::endl;
+      std::unordered_map<int, Service *>::iterator debug_it;
+      std::unordered_map<int, StateData *>::iterator debug_service_it;
+      std::unordered_map<int, StateData *> debug_clients;
+      Service *debug_s;
+      int debug_service_id;
+      StateData* debug_sd;
+      int debug_connection_id;
+      for (debug_it = context->local_services.begin(); debug_it != context->local_services.end(); debug_it++) {
+        debug_service_id = debug_it->first;
+        debug_s = debug_it->second;
+        debug_clients = debug_s->GetClients();
+        for (debug_service_it = debug_clients.begin(); debug_service_it != debug_clients.end(); debug_service_it++) {
+          debug_connection_id = debug_service_it->first;
+          debug_sd = debug_service_it->second;
+
+          std::string debug_data = std::string(debug_sd->GetData(), debug_sd->GetSize());
+
+          std::cout << debug_service_id << " " << debug_connection_id << " " << debug_sd->GetSize() << " " << debug_sd->GetData() << std::endl;
+        }
       }
     }
   }
