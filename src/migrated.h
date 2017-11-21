@@ -3,6 +3,8 @@
 
 #include <memory>
 #include <vector>
+#include <cstdint>
+#include <pthread.h>
 
 #include "migrateserver.h"
 #include "connection.h"
@@ -24,6 +26,8 @@ typedef struct Context {
   std::vector<int> local_sockets;
   std::unordered_map<int, Service *> local_services;
   std::vector<MigrateServer *> servers;
+  pthread_mutex_t local_services_mutex;
+  pthread_mutex_t servers_mutex;
 } Context;
 
 typedef struct LocalDaemonSocket {

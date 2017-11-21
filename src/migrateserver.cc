@@ -39,7 +39,7 @@ void MigrateServer::AddConnection(int service, Connection *conn) {
   }
 }
 
-void MigrateServer::AddOrUpdateConnection(int service_identifier, int connection_identifier, char *state) {
+void MigrateServer::AddOrUpdateConnection(int service_identifier, int connection_identifier, char *state, int state_size) {
   if (!this->HasService(service_identifier)) {
     this->AddService(service_identifier);
   }
@@ -53,7 +53,6 @@ void MigrateServer::AddOrUpdateConnection(int service_identifier, int connection
   Connection *conn = NULL;
 
   for (it = conns->begin(); it != conns->end(); it++) {
-    std::cout << "Checking connection " << (*it)->GetServiceIdentifier() << " " << (*it)->GetConnectionIdentifier() << " " << (*it)->GetState() << std::endl;
     if ((*it)->GetServiceIdentifier() == service_identifier && (*it)->GetConnectionIdentifier() == connection_identifier) {
       conn = *it;
       break;
@@ -63,9 +62,10 @@ void MigrateServer::AddOrUpdateConnection(int service_identifier, int connection
   if (conn != NULL) {
     std::cout << "AddOrUpdateConnection(): Updating state" << std::endl;
     conn->SetState(state);
+    conn->SetStateSize(state_size);
   } else {
     std::cout << "AddOrUpdateConnection(): New connection" << std::endl;
-    Connection *conn = new Connection(service_identifier, connection_identifier, state);
+    Connection *conn = new Connection(service_identifier, connection_identifier, state, state_size);
     conns->push_back(conn);
   }
 }
@@ -73,10 +73,8 @@ void MigrateServer::AddOrUpdateConnection(int service_identifier, int connection
 std::vector<Connection *> * MigrateServer::GetConnections(int service) {
   auto conns = this->m_connections.find(service);
   if (conns != this->m_connections.end()) {
-    std::cout << "Found!" << std::endl;
     return conns->second;
   } else {
-    std::cout << "Not found!" << std::endl;
     return NULL;
   }
 }

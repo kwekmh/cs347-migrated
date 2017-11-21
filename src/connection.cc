@@ -1,9 +1,10 @@
 #include "connection.h"
 
-Connection::Connection(int service_identifier, int connection_identifier, char *state) {
+Connection::Connection(int service_identifier, int connection_identifier, char *state, int state_size) {
   this->m_service_identifier = service_identifier;
   this->m_connection_identifier = connection_identifier;
   this->m_state = state;
+  this->m_state_size = state_size;
 }
 
 int Connection::GetSupportGroup() {
@@ -34,4 +35,12 @@ void Connection::SetState(char *state) {
   char *old_state = this->m_state;
   this->m_state = state;
   delete [] old_state;
+}
+
+int Connection::GetStateSize() {
+  return this->m_state_size;
+}
+
+void Connection::SetStateSize(int state_size) {
+  this->m_state_size = state_size;
 }

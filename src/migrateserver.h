@@ -22,7 +22,7 @@ public:
   bool HasService(int service);
   std::vector<int> GetServices();
   void AddConnection(int service, Connection *conn);
-  void AddOrUpdateConnection(int service_identifier, int connection_identifier, char *state);
+  void AddOrUpdateConnection(int service_identifier, int connection_identifier, char *state, int state_size);
   std::vector<Connection *> * GetConnections(int service);
 };
 

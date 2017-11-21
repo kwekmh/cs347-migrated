@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <vector>
+#include <pthread.h>
 
 #include "migrated.h"
 #include "neighbourhood.h"
@@ -232,6 +233,7 @@ void * HandleLocalDaemonConnection(void * s) {
       int service_identifier = std::stoi(service_ss.str());
       int connection_identifier = std::stoi(conn_ident_ss.str());
 
+      pthread_mutex_lock(&context->local_services_mutex);
       Service *service;
       auto service_it = context->local_services.find(service_identifier);
       if (service_it == context->local_services.end()) {
@@ -243,8 +245,10 @@ void * HandleLocalDaemonConnection(void * s) {
 
       service->AddClient(connection_identifier, state_data);
       std::cout << "Added client to service " << service_identifier << ": " << connection_identifier << ", " << state_data->GetData() << std::endl;
+      pthread_mutex_unlock(&context->local_services_mutex);
 
       // START OF DEBUG CODE
+      pthread_mutex_lock(&context->local_services_mutex);
       std::unordered_map<int, Service *>::iterator debug_it;
       std::unordered_map<int, StateData *>::iterator debug_service_it;
       std::unordered_map<int, StateData *> debug_clients;
@@ -263,6 +267,7 @@ void * HandleLocalDaemonConnection(void * s) {
           std::string debug_data = std::string(debug_sd->GetData(), debug_sd->GetSize());
 
           std::cout << debug_service_id << " " << debug_connection_id << " " << debug_sd->GetSize() << " " << debug_sd->GetData() << std::endl;
+          pthread_mutex_unlock(&context->local_services_mutex);
           //END OF DEBUG CODE
         }
       }
@@ -345,6 +350,7 @@ void * StartLocalDaemon(void *c) {
 
 void * StartHeartbeatSender(void *c) {
   std::cout << "Starting Heartbeat Sender" << std::endl;
+  Context *context = (Context *) c;
   struct sockaddr_in addr;
 
   int sock;
@@ -359,26 +365,38 @@ void * StartHeartbeatSender(void *c) {
   addr.sin_addr.s_addr = inet_addr(NEIGHBOURHOOD_MULTICAST_GROUP);
   addr.sin_port = htons(NEIGHBOURHOOD_MULTICAST_PORT);
 
-  std::stringstream ss;
-
-  // This is for testing only and will be removed once the state dissemination logic is implemented
-
-  int i = 1;
-
   std::string message;
 
   while (1) {
-    // TESTING CODE
-    ss.str("");
-    ss.clear();
-    ss << "STATE " << GetIdentifier() << " 10000 " << i++ << " AAAAA";
-    // END OF TESTING CODE
+    std::unordered_map<int, Service*> services = context->local_services;
 
-    message = ss.str();
+    std::unordered_map<int, Service *>::iterator it;
+    std::unordered_map<int, StateData *>::iterator clients_it;
+    std::unordered_map<int, StateData *> clients;
+    Service *service;
+    int service_id;
+    StateData *state_data;
+    int connection_id;
 
-    if (sendto(sock, message.c_str(), message.length(), 0, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
-      perror("StartHeartbeatSender() sendto");
-      exit(1);
+    for (it = services.begin(); it != services.end(); it++) {
+      service_id = it->first;
+      service = it->second;
+      clients = service->GetClients();
+      for (clients_it = clients.begin(); clients_it != clients.end(); clients_it++) {
+        connection_id = clients_it->first;
+        state_data = clients_it->second;
+
+        std::stringstream msgstream;
+
+        msgstream << "STATE " << GetIdentifier() << " " << service_id << " " << connection_id << " " << std::string(state_data->GetData(), state_data->GetSize());
+
+        std::string msg = msgstream.str();
+
+        if (sendto(sock, msg.c_str(), msg.length(), 0, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
+          perror("StartHeartbeatSender() sendto");
+          exit(1);
+        }
+      }
     }
     std::this_thread::sleep_for(std::chrono::seconds(5));
   }
@@ -437,6 +455,7 @@ void * StartHeartbeatListener(void *c) {
       std::stringstream service_ss;
       std::stringstream conn_ident_ss;
       int i;
+      int sz;
       char *state_data;
 
       for (i = 6; i < in_bytes; i++) {
@@ -470,7 +489,7 @@ void * StartHeartbeatListener(void *c) {
       i++;
 
       if (in_bytes > i + 1) {
-        int sz = in_bytes - i;
+        sz = in_bytes - i;
         state_data = new char[sz];
         int j;
         for (j = 0; i < in_bytes; i++, j++) {
@@ -483,6 +502,7 @@ void * StartHeartbeatListener(void *c) {
       int connection_identifier = std::stoi(conn_ident_ss.str());
 
       // DEBUG CODE FOR CHECKING STATE OF SERVERS
+      pthread_mutex_lock(&context->servers_mutex);
       std::vector<MigrateServer *>::iterator debug_it;
       std::vector<int>::iterator debug_serv_it;
       std::vector<Connection *>::iterator debug_conn_it;
@@ -503,12 +523,14 @@ void * StartHeartbeatListener(void *c) {
           debug_conns = debug_s->GetConnections(*debug_serv_it);
           for (debug_conn_it = debug_conns->begin(); debug_conn_it != debug_conns->end(); debug_conn_it++) {
             debug_c = *debug_conn_it;
-            std::cout << debug_c->GetServiceIdentifier() << ", " << debug_c->GetConnectionIdentifier() << ", " << debug_c->GetState() << std::endl;
+            std::cout << debug_c->GetServiceIdentifier() << ", " << debug_c->GetConnectionIdentifier() << ", " << std::string(debug_c->GetState(), debug_c->GetStateSize()) << std::endl;
           }
         }
       }
+      pthread_mutex_unlock(&context->servers_mutex);
       // END OF DEBUG CODE
 
+      pthread_mutex_lock(&context->servers_mutex);
       MigrateServer *server = NULL;
 
       std::vector<MigrateServer *>::iterator it;
@@ -526,7 +548,8 @@ void * StartHeartbeatListener(void *c) {
       }
 
       std::cout << "Adding new connection " << service_identifier << " " << connection_identifier << " " << state_data << std::endl;
-      server->AddOrUpdateConnection(service_identifier, connection_identifier, state_data);
+      server->AddOrUpdateConnection(service_identifier, connection_identifier, state_data, sz);
+      pthread_mutex_unlock(&context->servers_mutex);
     }
   }
 

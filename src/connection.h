@@ -8,10 +8,11 @@ class Connection {
   int m_service_identifier;
   int m_connection_identifier;
   char *m_state;
+  int m_state_size;
   int m_support_group;
 
 public:
-  Connection(int service_identifier, int m_connection_identifier, char *state);
+  Connection(int service_identifier, int m_connection_identifier, char *state, int state_size);
   int GetSupportGroup();
 
   int GetServiceIdentifier();
@@ -22,6 +23,9 @@ public:
 
   char * GetState();
   void SetState(char *state);
+
+  int GetStateSize();
+  void SetStateSize(int state_size);
 };
 
 #endif
