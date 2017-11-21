@@ -243,6 +243,8 @@ void * HandleLocalDaemonConnection(void * s) {
 
       service->AddClient(connection_identifier, state_data);
       std::cout << "Added client to service " << service_identifier << ": " << connection_identifier << ", " << state_data->GetData() << std::endl;
+
+      // START OF DEBUG CODE
       std::unordered_map<int, Service *>::iterator debug_it;
       std::unordered_map<int, StateData *>::iterator debug_service_it;
       std::unordered_map<int, StateData *> debug_clients;
@@ -261,6 +263,7 @@ void * HandleLocalDaemonConnection(void * s) {
           std::string debug_data = std::string(debug_sd->GetData(), debug_sd->GetSize());
 
           std::cout << debug_service_id << " " << debug_connection_id << " " << debug_sd->GetSize() << " " << debug_sd->GetData() << std::endl;
+          //END OF DEBUG CODE
         }
       }
     }
