@@ -153,84 +153,15 @@ void * HandleLocalDaemonConnection(void * s) {
       pthread_exit(NULL);
     }
     std::cout << "LOCALMSG: " << std::string(buf, in_bytes) << std::endl;
-    if (in_bytes > 3 && strncmp(buf, "REG", 3) == 0) {
-      std::stringstream service_ident_ss;
 
-      int i;
-      for (i = 4; i < in_bytes; i++) {
-        service_ident_ss << buf[i];
-      }
-      int service_identifier = std::stoi(service_ident_ss.str());
+    int i = 0;
 
-      pthread_mutex_lock(&context->local_services_mutex);
-      Service *service;
-      auto service_it = context->local_services.find(service_identifier);
-      if (service_it == context->local_services.end()) {
-        service = new Service(service_identifier);
-        context->local_services[service_identifier] = service;
-      } else {
-        service = service_it->second;
-      }
-      service->SetLocalSocket(socket_struct->sock);
-      pthread_mutex_unlock(&context->local_services_mutex);
-    } else if (in_bytes > 7 && strncmp(buf, "SOCKETS", 7) == 0) {
-      int count = 0;
-
-      int i = 0;
-      for (i = 8; i < in_bytes; i++) {
-        if (buf[i] != '\0') {
-          count++;
-        }
-      }
-
-      char fd_count_str[count + 1];
-
-      strncpy(fd_count_str, buf + 8, count);
-
-      fd_count_str[count] = '\0';
-
-      int fd_count = atoi(fd_count_str);
-
-      int *fds = new int[fd_count];
-
-      int rcvd_fd_count = AwaitSocketMessages(socket_struct->sock, fds, fd_count);
-
-      std::cout << "Received " << rcvd_fd_count << " descriptors" << std::endl;
-      for (i = 0; i < rcvd_fd_count; i++) {
-        std::cout << "Desciptor " << i << ": " << fds[i] << std::endl;
-      }
-    } else if (in_bytes > 6 && strncmp(buf, "SOCKET", 6) == 0) {
-      int fd;
-      if ((fd = AwaitSocketMessage(socket_struct->sock)) < 0) {
-        perror("HandleLocalDaemonConnection() AwaitsocketMessage");
-      } else {
-        std::cout << "Received descriptor " << fd << std::endl;
-        socket_struct->context->local_sockets.push_back(fd);
-      }
-    } else if (in_bytes > 5 && strncmp(buf, "STATE", 5) == 0) {
-      // State information received from application
-
-      std::stringstream service_ss;
-      std::stringstream conn_ident_ss;
-      StateData *state_data;
-      char *state_data_buf;
-      int sz;
-
-      int i;
-
-      for (i = 6; i < in_bytes; i++) {
-        if (buf[i] != ' ') {
-          service_ss << buf[i];
-        } else {
-          break;
-        }
-      }
-
-      i++;
+    while (i < in_bytes) {
+      std::stringstream msg_size_ss;
 
       for (; i < in_bytes; i++) {
         if (buf[i] != ' ') {
-          conn_ident_ss << buf[i];
+          msg_size_ss << buf[i];
         } else {
           break;
         }
@@ -238,59 +169,146 @@ void * HandleLocalDaemonConnection(void * s) {
 
       i++;
 
-      if (in_bytes > i + 1) {
-        sz = in_bytes - i;
-        state_data_buf = new char[sz];
-        int j;
-        for (j = 0; i < in_bytes; i++, j++) {
-          state_data_buf[j] = buf[i];
+      std::string msg_size_str = msg_size_ss.str();
+
+      int msg_size = std::stoi(msg_size_ss.str());
+
+      if (msg_size > 3 && strncmp(buf + i, "REG", 3) == 0) {
+        std::stringstream service_ident_ss;
+        int max_bytes = i + msg_size;
+
+        for (i += 4; i < max_bytes; i++) {
+          service_ident_ss << buf[i];
         }
-      }
+        int service_identifier = std::stoi(service_ident_ss.str());
 
-      state_data = new StateData(state_data_buf, sz);
+        pthread_mutex_lock(&context->local_services_mutex);
+        Service *service;
+        auto service_it = context->local_services.find(service_identifier);
+        if (service_it == context->local_services.end()) {
+          service = new Service(service_identifier);
+          context->local_services[service_identifier] = service;
+        } else {
+          service = service_it->second;
+        }
+        service->SetLocalSocket(socket_struct->sock);
+        pthread_mutex_unlock(&context->local_services_mutex);
+      } else if (msg_size > 7 && strncmp(buf + i, "SOCKETS", 7) == 0) {
+        std::stringstream fd_count_ss;
+        int max_bytes = i + msg_size;
 
-      int service_identifier = std::stoi(service_ss.str());
-      int connection_identifier = std::stoi(conn_ident_ss.str());
+        for (i += 8; i < max_bytes; i++) {
+          if (buf[i] != ' ') {
+            fd_count_ss << buf[i];
+          } else {
+            break;
+          }
+        }
 
-      pthread_mutex_lock(&context->local_services_mutex);
-      Service *service;
-      auto service_it = context->local_services.find(service_identifier);
-      if (service_it == context->local_services.end()) {
-        service = new Service(service_identifier);
-        context->local_services[service_identifier] = service;
-      } else {
-        service = service_it->second;
-      }
+        int fd_count = std::stoi(fd_count_ss.str());
 
-      service->SetLocalSocket(socket_struct->sock);
+        int *fds = new int[fd_count];
 
-      service->AddClient(connection_identifier, state_data);
-      std::cout << "Added client to service " << service_identifier << ": " << connection_identifier << ", " << state_data->GetData() << std::endl;
-      pthread_mutex_unlock(&context->local_services_mutex);
+        int rcvd_fd_count = AwaitSocketMessages(socket_struct->sock, fds, fd_count);
 
-      // START OF DEBUG CODE
-      pthread_mutex_lock(&context->local_services_mutex);
-      std::unordered_map<int, Service *>::iterator debug_it;
-      std::unordered_map<int, StateData *>::iterator debug_service_it;
-      std::unordered_map<int, StateData *> debug_clients;
-      Service *debug_s;
-      int debug_service_id;
-      StateData* debug_sd;
-      int debug_connection_id;
-      for (debug_it = context->local_services.begin(); debug_it != context->local_services.end(); debug_it++) {
-        debug_service_id = debug_it->first;
-        debug_s = debug_it->second;
-        debug_clients = debug_s->GetClients();
-        std::cout << debug_service_id << std::endl << "----------------------" << std::endl;
-        for (debug_service_it = debug_clients.begin(); debug_service_it != debug_clients.end(); debug_service_it++) {
-          debug_connection_id = debug_service_it->first;
-          debug_sd = debug_service_it->second;
+        std::cout << "Received " << rcvd_fd_count << " descriptors" << std::endl;
+        for (int i = 0; i < rcvd_fd_count; i++) {
+          std::cout << "Descriptor " << i << ": " << fds[i] << std::endl;
+        }
+      } else if (msg_size > 6 && strncmp(buf + i, "SOCKET", 6) == 0) {
+        i += 7;
+        int fd;
+        if ((fd = AwaitSocketMessage(socket_struct->sock)) < 0) {
+          perror("HandleLocalDaemonConnection() AwaitSocketMessage");
+        } else {
+          std::cout << "Received descriptor " << fd << std::endl;
+          socket_struct->context->local_sockets.push_back(fd);
+        }
+      } else if (msg_size > 5 && strncmp(buf + i, "STATE", 5) == 0) {
+        // State information received from application
 
-          std::string debug_data = std::string(debug_sd->GetData(), debug_sd->GetSize());
+        std::stringstream service_ss;
+        std::stringstream conn_ident_ss;
+        StateData *state_data;
+        char *state_data_buf;
+        int sz;
 
-          std::cout << debug_service_id << " " << debug_connection_id << " " << debug_sd->GetSize() << " " << debug_sd->GetData() << std::endl;
-          pthread_mutex_unlock(&context->local_services_mutex);
-          //END OF DEBUG CODE
+        int max_bytes = i + msg_size;
+
+        for (i += 6; i < max_bytes; i++) {
+          if (buf[i] != ' ') {
+            service_ss << buf[i];
+          } else {
+            break;
+          }
+        }
+
+        i++;
+
+        for (; i < max_bytes; i++) {
+          if (buf[i] != ' ') {
+            conn_ident_ss << buf[i];
+          } else {
+            break;
+          }
+        }
+
+        i++;
+
+        if (max_bytes > i + 1) {
+          sz = max_bytes - i;
+          state_data_buf = new char[sz];
+          int j;
+          for (j = 0; i < in_bytes; i++, j++) {
+            state_data_buf[j] = buf[i];
+          }
+        }
+
+        state_data = new StateData(state_data_buf, sz);
+
+        int service_identifier = std::stoi(service_ss.str());
+        int connection_identifier = std::stoi(conn_ident_ss.str());
+
+        pthread_mutex_lock(&context->local_services_mutex);
+        Service *service;
+        auto service_it = context->local_services.find(service_identifier);
+        if (service_it == context->local_services.end()) {
+          service = new Service(service_identifier);
+          context->local_services[service_identifier] = service;
+        } else {
+          service = service_it->second;
+        }
+
+        service->SetLocalSocket(socket_struct->sock);
+
+        service->AddClient(connection_identifier, state_data);
+        std::cout << "Added client to service " << service_identifier << ": " << connection_identifier << ", " << state_data->GetData() << std::endl;
+        pthread_mutex_unlock(&context->local_services_mutex);
+
+        // START OF DEBUG CODE
+        pthread_mutex_lock(&context->local_services_mutex);
+        std::unordered_map<int, Service *>::iterator debug_it;
+        std::unordered_map<int, StateData *>::iterator debug_service_it;
+        std::unordered_map<int, StateData *> debug_clients;
+        Service *debug_s;
+        int debug_service_id;
+        StateData* debug_sd;
+        int debug_connection_id;
+        for (debug_it = context->local_services.begin(); debug_it != context->local_services.end(); debug_it++) {
+          debug_service_id = debug_it->first;
+          debug_s = debug_it->second;
+          debug_clients = debug_s->GetClients();
+          std::cout << debug_service_id << std::endl << "----------------------" << std::endl;
+          for (debug_service_it = debug_clients.begin(); debug_service_it != debug_clients.end(); debug_service_it++) {
+            debug_connection_id = debug_service_it->first;
+            debug_sd = debug_service_it->second;
+
+            std::string debug_data = std::string(debug_sd->GetData(), debug_sd->GetSize());
+
+            std::cout << debug_service_id << " " << debug_connection_id << " " << debug_sd->GetSize() << " " << debug_sd->GetData() << std::endl;
+            pthread_mutex_unlock(&context->local_services_mutex);
+            //END OF DEBUG CODE
+          }
         }
       }
     }
@@ -414,6 +432,15 @@ void * StartHeartbeatSender(void *c) {
 
         std::string msg = msgstream.str();
 
+        msgstream.str("");
+        msgstream.clear();
+
+        int msg_size = msg.length();
+
+        msgstream << msg_size << " " << msg;
+
+        msg = msgstream.str();
+
         if (sendto(sock, msg.c_str(), msg.length(), 0, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
           perror("StartHeartbeatSender() sendto");
           exit(1);
@@ -470,28 +497,13 @@ void * StartHeartbeatListener(void *c) {
     if ((in_bytes = recvfrom(sock, buf, MSG_BUFFER_SIZE, 0, (struct sockaddr *) &addr, &addrlen)) < 0) {
       perror("StartHeartbeatListener() recvfrom");
     }
+    int i = 0;
     std::cout << "MSG: " << std::string(buf, in_bytes) << std::endl;
-    if (in_bytes > 5 && strncmp(buf, "STATE", 5) == 0) {
-      std::stringstream ident_ss;
-      std::stringstream service_ss;
-      std::stringstream conn_ident_ss;
-      int i;
-      int sz;
-      char *state_data;
-
-      for (i = 6; i < in_bytes; i++) {
-        if (buf[i] != ' ') {
-          ident_ss << buf[i];
-        } else {
-          break;
-        }
-      }
-
-      i++;
-
+    while (i < in_bytes) {
+      std::stringstream msg_size_ss;
       for (; i < in_bytes; i++) {
         if (buf[i] != ' ') {
-          service_ss << buf[i];
+          msg_size_ss << buf[i];
         } else {
           break;
         }
@@ -499,78 +511,108 @@ void * StartHeartbeatListener(void *c) {
 
       i++;
 
-      for (; i < in_bytes; i++) {
-        if (buf[i] != ' ') {
-          conn_ident_ss << buf[i];
-        } else {
-          break;
-        }
-      }
+      int msg_size = std::stoi(msg_size_ss.str());
+      if (msg_size > 5 && strncmp(buf + i, "STATE", 5) == 0) {
+        std::stringstream ident_ss;
+        std::stringstream service_ss;
+        std::stringstream conn_ident_ss;
+        int sz;
+        char *state_data;
+        int max_bytes = i + msg_size;
 
-      i++;
-
-      if (in_bytes > i + 1) {
-        sz = in_bytes - i;
-        state_data = new char[sz];
-        int j;
-        for (j = 0; i < in_bytes; i++, j++) {
-          state_data[j] = buf[i];
-        }
-      }
-
-      std::string ident = ident_ss.str();
-      int service_identifier = std::stoi(service_ss.str());
-      int connection_identifier = std::stoi(conn_ident_ss.str());
-
-      // DEBUG CODE FOR CHECKING STATE OF SERVERS
-      pthread_mutex_lock(&context->servers_mutex);
-      std::vector<MigrateServer *>::iterator debug_it;
-      std::vector<int>::iterator debug_serv_it;
-      std::vector<Connection *>::iterator debug_conn_it;
-      MigrateServer *debug_s;
-      std::vector<int> debug_services;
-      std::vector<Connection *> * debug_conns;
-      Connection *debug_c;
-
-      std::cout << "Servers:" << std::endl;
-
-      for (debug_it = context->servers.begin(); debug_it != context->servers.end(); debug_it++) {
-        debug_s = *debug_it;
-        std::cout << debug_s->GetIdentifier() << std::endl;
-        std::cout << "------------------------" << std::endl;
-        debug_services = debug_s->GetServices();
-        for (debug_serv_it = debug_services.begin(); debug_serv_it != debug_services.end(); debug_serv_it++) {
-          std::cout << *debug_serv_it << std::endl << "---------" << std::endl;
-          debug_conns = debug_s->GetConnections(*debug_serv_it);
-          for (debug_conn_it = debug_conns->begin(); debug_conn_it != debug_conns->end(); debug_conn_it++) {
-            debug_c = *debug_conn_it;
-            std::cout << debug_c->GetServiceIdentifier() << ", " << debug_c->GetConnectionIdentifier() << ", " << std::string(debug_c->GetState(), debug_c->GetStateSize()) << std::endl;
+        for (i += 6; i < max_bytes; i++) {
+          if (buf[i] != ' ') {
+            ident_ss << buf[i];
+          } else {
+            break;
           }
         }
-      }
-      pthread_mutex_unlock(&context->servers_mutex);
-      // END OF DEBUG CODE
 
-      pthread_mutex_lock(&context->servers_mutex);
-      MigrateServer *server = NULL;
+        i++;
 
-      std::vector<MigrateServer *>::iterator it;
-
-      for (it = context->servers.begin(); it != context->servers.end(); it++) {
-        if ((*it)->GetIdentifier() == ident) {
-          server = *it;
-          break;
+        for (; i < max_bytes; i++) {
+          if (buf[i] != ' ') {
+            service_ss << buf[i];
+          } else {
+            break;
+          }
         }
-      }
 
-      if (server == NULL) {
-        server = new MigrateServer(ident);
-        context->servers.push_back(server);
-      }
+        i++;
 
-      std::cout << "Adding new connection " << service_identifier << " " << connection_identifier << " " << state_data << std::endl;
-      server->AddOrUpdateConnection(service_identifier, connection_identifier, state_data, sz);
-      pthread_mutex_unlock(&context->servers_mutex);
+        for (; i < max_bytes; i++) {
+          if (buf[i] != ' ') {
+            conn_ident_ss << buf[i];
+          } else {
+            break;
+          }
+        }
+
+        i++;
+
+        if (max_bytes > i + 1) {
+          sz = max_bytes - i;
+          state_data = new char[sz];
+          int j;
+          for (j = 0; i < in_bytes; i++, j++) {
+            state_data[j] = buf[i];
+          }
+        }
+
+        std::string ident = ident_ss.str();
+        int service_identifier = std::stoi(service_ss.str());
+        int connection_identifier = std::stoi(conn_ident_ss.str());
+
+        // DEBUG CODE FOR CHECKING STATE OF SERVERS
+        pthread_mutex_lock(&context->servers_mutex);
+        std::vector<MigrateServer *>::iterator debug_it;
+        std::vector<int>::iterator debug_serv_it;
+        std::vector<Connection *>::iterator debug_conn_it;
+        MigrateServer *debug_s;
+        std::vector<int> debug_services;
+        std::vector<Connection *> * debug_conns;
+        Connection *debug_c;
+
+        std::cout << "Servers:" << std::endl;
+
+        for (debug_it = context->servers.begin(); debug_it != context->servers.end(); debug_it++) {
+          debug_s = *debug_it;
+          std::cout << debug_s->GetIdentifier() << std::endl;
+          std::cout << "------------------------" << std::endl;
+          debug_services = debug_s->GetServices();
+          for (debug_serv_it = debug_services.begin(); debug_serv_it != debug_services.end(); debug_serv_it++) {
+            std::cout << *debug_serv_it << std::endl << "---------" << std::endl;
+            debug_conns = debug_s->GetConnections(*debug_serv_it);
+            for (debug_conn_it = debug_conns->begin(); debug_conn_it != debug_conns->end(); debug_conn_it++) {
+              debug_c = *debug_conn_it;
+              std::cout << debug_c->GetServiceIdentifier() << ", " << debug_c->GetConnectionIdentifier() << ", " << std::string(debug_c->GetState(), debug_c->GetStateSize()) << std::endl;
+            }
+          }
+        }
+        pthread_mutex_unlock(&context->servers_mutex);
+        // END OF DEBUG CODE
+
+        pthread_mutex_lock(&context->servers_mutex);
+        MigrateServer *server = NULL;
+
+        std::vector<MigrateServer *>::iterator it;
+
+        for (it = context->servers.begin(); it != context->servers.end(); it++) {
+          if ((*it)->GetIdentifier() == ident) {
+            server = *it;
+            break;
+          }
+        }
+
+        if (server == NULL) {
+          server = new MigrateServer(ident);
+          context->servers.push_back(server);
+        }
+
+        std::cout << "Adding new connection " << service_identifier << " " << connection_identifier << " " << state_data << std::endl;
+        server->AddOrUpdateConnection(service_identifier, connection_identifier, state_data, sz);
+        pthread_mutex_unlock(&context->servers_mutex);
+      }
     }
   }
 
