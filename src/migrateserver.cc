@@ -78,3 +78,15 @@ std::vector<Connection *> * MigrateServer::GetConnections(int service) {
     return NULL;
   }
 }
+
+int MigrateServer::GetCounter() {
+  return this->m_counter;
+}
+
+void MigrateServer::SetCounter(int counter) {
+  this->m_counter = counter;
+}
+
+void MigrateServer::IncrementCounter() {
+  this->m_counter++;
+}

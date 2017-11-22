@@ -644,6 +644,8 @@ void * StartHeartbeatListener(void *c) {
           context->servers.push_back(server);
         }
 
+        server->SetCounter(context->counter);
+
         std::cout << "Adding new connection " << service_identifier << " " << connection_identifier << " " << state_data << std::endl;
         server->AddOrUpdateConnection(service_identifier, connection_identifier, state_data, sz);
         pthread_mutex_unlock(&context->servers_mutex);
@@ -654,18 +656,54 @@ void * StartHeartbeatListener(void *c) {
   return NULL;
 }
 
+void * StartFailureDetector(void *c) {
+  std::cout << "Starting Failure Detector" << std::endl;
+  Context *context = (Context*) c;
+
+  MigrateServer *server;
+
+  while (1) {
+    for (auto it = context->servers.begin(); it != context->servers.end(); it++) {
+      server = *it;
+
+      if (server->GetCounter() - context->counter > 3) {
+        std::cout << server->GetIdentifier() << " has failed!" << std::endl;
+        std::vector<int> services = server->GetServices();
+        for (auto services_it = services.begin(); services_it != services.end(); services_it++) {
+          int service_identifier = *services_it;
+          auto service = context->local_services[service_identifier];
+
+          int sock = service->GetLocalSocket();
+
+          // TODO: Request for sockets from local service
+          // TODO: Send application state to local service
+          // TODO: Repair the sockets
+          // TODO: Send mappings of sockets to client identifiers
+        }
+      }
+    }
+
+    std::this_thread::sleep_for(std::chrono::seconds(5));
+  }
+
+  return NULL;
+}
+
 void InitServer(Context *context) {
   pthread_t hb_sender_pthread;
   pthread_t hb_listener_pthread;
   pthread_t local_daemon_pthread;
+  pthread_t failure_detector_pthread;
 
   pthread_create(&hb_sender_pthread, NULL, StartHeartbeatSender, (void *) context);
   pthread_create(&hb_listener_pthread, NULL, StartHeartbeatListener, (void *) context);
   pthread_create(&local_daemon_pthread, NULL, StartLocalDaemon, (void *) context);
+  pthread_create(&failure_detector_pthread, NULL, StartFailureDetector, (void *) context);
 
   pthread_join(hb_sender_pthread, NULL);
   pthread_join(hb_listener_pthread, NULL);
   pthread_join(local_daemon_pthread, NULL);
+  pthread_join(failure_detector_pthread, NULL);
 }
 
 int main() {

@@ -28,6 +28,7 @@ typedef struct Context {
   std::vector<MigrateServer *> servers;
   pthread_mutex_t local_services_mutex;
   pthread_mutex_t servers_mutex;
+  int counter;
 } Context;
 
 typedef struct LocalDaemonSocket {
@@ -45,5 +46,6 @@ void * HandleLocalDaemonConnection(void *s);
 void * StartLocalDaemon(void *c);
 void * StartHeartbeatSender(void *c);
 void * StartHeartbeatListener(void *c);
+void * StartFailureDetector(void *c);
 
 #endif
