@@ -40,6 +40,7 @@ void InitServer();
 void CleanUpSocketStruct(LocalDaemonSocket *socket_struct);
 int AwaitSocketMessage(int sock);
 int AwaitSocketMessages(int sock, int *fds, int fd_count);
+void SendApplicationStateToService(Context *context, int service_identifier);
 void * HandleLocalDaemonConnection(void *s);
 void * StartLocalDaemon(void *c);
 void * StartHeartbeatSender(void *c);

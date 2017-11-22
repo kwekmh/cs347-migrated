@@ -40,6 +40,41 @@ void CleanUpSocketStruct(LocalDaemonSocket *socket_struct) {
   delete socket_struct;
 }
 
+void SendApplicationStateToService(Context *context, int service_identifier) {
+  auto services_it = context->local_services.find(service_identifier);
+  if (services_it != context->local_services.end()) {
+    Service *service = services_it->second;
+
+    auto clients = service->GetClients();
+
+    int sock = service->GetLocalSocket();
+
+    for (auto clients_it = clients.begin(); clients_it != clients.end(); clients_it++) {
+      int client_identifier = clients_it->first;
+      StateData *state_data = clients_it->second;
+
+      std::stringstream msgstream;
+
+      std::string state_data_str = std::string(state_data->GetData(), state_data->GetSize());
+
+      msgstream << service_identifier << " " << client_identifier << " " << state_data_str;
+
+      std::string msg = msgstream.str();
+
+      msgstream.str("");
+      msgstream.clear();
+
+      msgstream << msg.length() << " " << msg;
+
+      msg = msgstream.str();
+
+      if (send(sock, msg.c_str(), msg.length(), 0) < 0) {
+        perror("SendApplicationStateToService() send");
+      }
+    }
+  }
+}
+
 int AwaitSocketMessage(int sock) {
   std::cout << "Awaiting descriptor on " << sock << std::endl;
   //char buf[SOCK_BUF_MAX_SIZE];
