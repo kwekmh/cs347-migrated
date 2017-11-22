@@ -142,7 +142,7 @@ void * HandleLocalDaemonConnection(void * s) {
   int in_bytes;
 
   while (1) {
-    in_bytes = recv(socket_struct->sock, buf, MSG_BUFFER_SIZE - 1, 0);
+    in_bytes = recv(socket_struct->sock, buf, MSG_BUFFER_SIZE, 0);
     if (in_bytes < 0) {
       perror("HandleLocalDaemonConnection() recv");
       CleanUpSocketStruct(socket_struct);
@@ -152,9 +152,28 @@ void * HandleLocalDaemonConnection(void * s) {
       CleanUpSocketStruct(socket_struct);
       pthread_exit(NULL);
     }
-    buf[in_bytes] = '\0';
-    std::cout << "LOCALMSG: " << buf << std::endl;
-    if (in_bytes > 7 && strncmp(buf, "SOCKETS", 7) == 0) {
+    std::cout << "LOCALMSG: " << std::string(buf, in_bytes) << std::endl;
+    if (in_bytes > 3 && strncmp(buf, "REG", 3) == 0) {
+      std::stringstream service_ident_ss;
+
+      int i;
+      for (i = 4; i < in_bytes; i++) {
+        service_ident_ss << buf[i];
+      }
+      int service_identifier = std::stoi(service_ident_ss.str());
+
+      pthread_mutex_lock(&context->local_services_mutex);
+      Service *service;
+      auto service_it = context->local_services.find(service_identifier);
+      if (service_it == context->local_services.end()) {
+        service = new Service(service_identifier);
+        context->local_services[service_identifier] = service;
+      } else {
+        service = service_it->second;
+      }
+      service->SetLocalSocket(socket_struct->sock);
+      pthread_mutex_unlock(&context->local_services_mutex);
+    } else if (in_bytes > 7 && strncmp(buf, "SOCKETS", 7) == 0) {
       int count = 0;
 
       int i = 0;
@@ -243,6 +262,8 @@ void * HandleLocalDaemonConnection(void * s) {
         service = service_it->second;
       }
 
+      service->SetLocalSocket(socket_struct->sock);
+
       service->AddClient(connection_identifier, state_data);
       std::cout << "Added client to service " << service_identifier << ": " << connection_identifier << ", " << state_data->GetData() << std::endl;
       pthread_mutex_unlock(&context->local_services_mutex);
@@ -260,6 +281,7 @@ void * HandleLocalDaemonConnection(void * s) {
         debug_service_id = debug_it->first;
         debug_s = debug_it->second;
         debug_clients = debug_s->GetClients();
+        std::cout << debug_service_id << std::endl << "----------------------" << std::endl;
         for (debug_service_it = debug_clients.begin(); debug_service_it != debug_clients.end(); debug_service_it++) {
           debug_connection_id = debug_service_it->first;
           debug_sd = debug_service_it->second;
@@ -445,11 +467,10 @@ void * StartHeartbeatListener(void *c) {
 
   while (1) {
     addrlen = sizeof(addr);
-    if ((in_bytes = recvfrom(sock, buf, MSG_BUFFER_SIZE - 1, 0, (struct sockaddr *) &addr, &addrlen)) < 0) {
+    if ((in_bytes = recvfrom(sock, buf, MSG_BUFFER_SIZE, 0, (struct sockaddr *) &addr, &addrlen)) < 0) {
       perror("StartHeartbeatListener() recvfrom");
     }
-    buf[in_bytes] = '\0';
-    std::cout << "MSG: " << buf << std::endl;
+    std::cout << "MSG: " << std::string(buf, in_bytes) << std::endl;
     if (in_bytes > 5 && strncmp(buf, "STATE", 5) == 0) {
       std::stringstream ident_ss;
       std::stringstream service_ss;
