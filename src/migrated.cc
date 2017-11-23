@@ -608,7 +608,7 @@ void * StartHeartbeatListener(void *c) {
         std::vector<Connection *> * debug_conns;
         Connection *debug_c;
 
-        std::cout << "Servers:" << std::endl;
+        std::cout << "Servers (on " << GetIdentifier() << "):" << std::endl;
 
         for (debug_it = context->servers.begin(); debug_it != context->servers.end(); debug_it++) {
           debug_s = *debug_it;
