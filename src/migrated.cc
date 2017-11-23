@@ -294,7 +294,7 @@ void * HandleLocalDaemonConnection(void * s) {
           sz = max_bytes - i;
           state_data_buf = new char[sz];
           int j;
-          for (j = 0; i < in_bytes; i++, j++) {
+          for (j = 0; i < max_bytes; i++, j++) {
             state_data_buf[j] = buf[i];
           }
         }
