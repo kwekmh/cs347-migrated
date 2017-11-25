@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <pthread.h>
 
+#include "configuration.h"
 #include "migrateserver.h"
 #include "connection.h"
 
@@ -17,6 +18,8 @@
 #define DAEMON_MAX_CONNECTIONS 500
 #define SOCK_BUF_MAX_SIZE 960
 
+#define DEFAULT_CONFIG_FILE STR_VALUE(/etc/migrated/config)
+
 #include <vector>
 #include <unordered_map>
 
@@ -26,6 +29,7 @@ typedef struct Context {
   std::vector<int> local_sockets;
   std::unordered_map<int, Service *> local_services;
   std::vector<MigrateServer *> servers;
+  Configuration *config;
   pthread_mutex_t local_services_mutex;
   pthread_mutex_t servers_mutex;
   int counter;

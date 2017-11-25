@@ -19,6 +19,7 @@
 #include <pthread.h>
 
 #include "migrated.h"
+#include "configuration.h"
 #include "neighbourhood.h"
 #include "service.h"
 #include "statedata.h"
@@ -710,6 +711,9 @@ int main() {
   Context *context = new Context;
   std::vector<MigrateServer *> servers;
   context->servers = servers;
+  Configuration *config = new Configuration(std::string(DEFAULT_CONFIG_FILE));
+  config->PrintMappings();
+  context->config = config;
   InitServer(context);
   return 0;
 }
