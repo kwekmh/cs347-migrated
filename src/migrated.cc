@@ -2,6 +2,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netinet/tcp.h>
 #include <time.h>
 #include <string.h>
 #include <stdio.h>
@@ -37,43 +38,256 @@ std::string GetIdentifier() {
 }
 
 void CleanUpSocketStruct(LocalDaemonSocket *socket_struct) {
+  auto mappings_it = socket_struct->context->local_service_mappings.find(socket_struct->sock);
+  if (mappings_it != socket_struct->context->local_service_mappings.end()) {
+    std::vector<int> *mappings = mappings_it->second;
+    for (auto it = mappings->begin(); it != mappings->end(); it++) {
+      std::cout << "Destroying descriptor " << *it << std::endl;
+      if (close(*it) < 0) {
+        perror("CleanUpsocketStruct() close");
+      }
+    }
+  }
+  close(socket_struct->sock);
   delete socket_struct->addr;
   delete socket_struct;
 }
 
-void SendApplicationStateToService(Context *context, int service_identifier) {
-  auto services_it = context->local_services.find(service_identifier);
-  if (services_it != context->local_services.end()) {
-    Service *service = services_it->second;
+void SendApplicationStateToService(Context *context, std::string server_identifier, int service_identifier) {
+  MigrateServer *server = NULL;
+  for (auto it = context->servers.begin(); it != context->servers.end(); it++) {
+    MigrateServer *s = *it;
+    if (s->GetIdentifier() == server_identifier) {
+      server = s;
+      break;
+    }
+  }
+  std::cout << "SendApplicationStateToService(): Found server " << server_identifier << std::endl;
+  if (server != NULL) {
+    auto connections = server->GetConnections(service_identifier);
 
-    auto clients = service->GetClients();
+    auto services_it = context->local_services.find(service_identifier);
 
-    int sock = service->GetLocalSocket();
+    if (services_it != context->local_services.end()) {
+      Service *service = services_it->second;
 
-    for (auto clients_it = clients.begin(); clients_it != clients.end(); clients_it++) {
-      int client_identifier = clients_it->first;
-      StateData *state_data = clients_it->second;
+      int sock = service->GetLocalSocket();
 
-      std::stringstream msgstream;
+      for (auto conns_it = connections->begin(); conns_it != connections->end(); conns_it++) {
+        Connection *connection = *conns_it;
+        int client_identifier = connection->GetConnectionIdentifier();
 
-      std::string state_data_str = std::string(state_data->GetData(), state_data->GetSize());
+        std::stringstream msgstream;
 
-      msgstream << service_identifier << " " << client_identifier << " " << state_data_str;
+        std::string state_data_str = std::string(connection->GetState(), connection->GetStateSize());
 
-      std::string msg = msgstream.str();
+        msgstream << "STATE " << service_identifier << " " << client_identifier << " " << state_data_str;
 
-      msgstream.str("");
-      msgstream.clear();
+        std::string msg = msgstream.str();
 
-      msgstream << msg.length() << " " << msg;
+        msgstream.str("");
+        msgstream.clear();
 
-      msg = msgstream.str();
+        msgstream << msg.length() << " " << msg;
 
-      if (send(sock, msg.c_str(), msg.length(), 0) < 0) {
-        perror("SendApplicationStateToService() send");
+        msg = msgstream.str();
+
+        if (send(sock, msg.c_str(), msg.length(), 0) < 0) {
+          perror("SendApplicationStateToService() send");
+        }
       }
     }
   }
+}
+
+void SendMigrationRequest(Connection *connection, Context *context) {
+  std::istringstream is_state(std::string(connection->GetState(), connection->GetStateSize()));
+  std::string ip_str;
+  std::string port_str;
+  std::string tcp_send_seq_str;
+  std::string tcp_recv_seq_str;
+  std::string app_info_length_str;
+  if (std::getline(is_state, ip_str, ' ') && std::getline(is_state, port_str, ' ') && std::getline(is_state, tcp_send_seq_str, ' ') && std::getline(is_state, tcp_recv_seq_str, ' ') && std::getline(is_state, app_info_length_str)) {
+    int client_port = std::stoi(context->config->Get(std::string("CLIENT_PORT")));
+    std::string local_ip = context->config->Get(std::string("IP_ADDRESS"));
+
+    sockaddr_in addr;
+
+    int sock;
+
+    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+      perror("SendMigrationRequest() socket");
+    }
+
+    memset(&addr, 0, sizeof(addr));
+
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = inet_addr(ip_str.c_str());
+    addr.sin_port = htons(client_port);
+
+    if (connect(sock, (sockaddr *) &addr, sizeof(addr)) < 0) {
+      perror("SendMigrationRequest() connect");
+    }
+
+    std::stringstream msgstream;
+
+    msgstream << "MIGRATE " << local_ip << " " << connection->GetServiceIdentifier();
+
+    std::string msg = msgstream.str();
+
+    msgstream.str("");
+    msgstream.clear();
+
+    msgstream << msg.length() << " " << msg;
+
+    msg = msgstream.str();
+
+    if (send(sock, msg.c_str(), msg.length(), 0) < 0) {
+      perror("SendMigrationRequest() send");
+    }
+  }
+}
+
+void SendSocketRequest(int sock, int service_identifier, int count) {
+  std::stringstream msgstream;
+
+  msgstream << "REQ " << service_identifier << " " << count;
+
+  std::string msg = msgstream.str();
+
+  msgstream.str("");
+  msgstream.clear();
+
+  msgstream << msg.length() << " " << msg;
+
+  msg = msgstream.str();
+
+  if (send(sock, msg.c_str(), msg.length(), 0) < 0) {
+    perror("SendSocketRequest() send");
+  }
+}
+
+void SendClientMapping(int sock, int service_identifier, int client_identifier, int fd) {
+  std::stringstream msgstream;
+
+  msgstream << "MAP " << service_identifier << " " << client_identifier << " " << fd;
+
+  std::string msg = msgstream.str();
+
+  msgstream.str("");
+  msgstream.clear();
+
+  msgstream << msg.length() << " " << msg;
+
+  msg = msgstream.str();
+
+  if (send(sock, msg.c_str(), msg.length(), 0) < 0) {
+    perror("SendClientMapping() send");
+  }
+}
+
+std::unordered_map<int, int> RepairSockets(int *fds, int fd_count, int service_identifier, std::vector<Connection *> *clients) {
+  int aux_sendq = TCP_SEND_QUEUE;
+  int aux_recvq = TCP_RECV_QUEUE;
+  int ret;
+  std::unordered_map<int, int> mappings;
+  auto clients_it = clients->begin();
+  for (int i = 0; i < fd_count && clients_it != clients->end(); i++, clients_it++) {
+    int fd = fds[i];
+    if (TcpRepairOn(fd)) {
+      Connection *connection = *clients_it;
+      int client_identifier = connection->GetConnectionIdentifier();
+      std::istringstream is_state(std::string(connection->GetState(), connection->GetStateSize()));
+      std::string ip_str;
+      std::string port_str;
+      std::string tcp_send_seq_str;
+      std::string tcp_recv_seq_str;
+      std::string app_info_length_str;
+      if (std::getline(is_state, ip_str, ' ') && std::getline(is_state, port_str, ' ') && std::getline(is_state, tcp_send_seq_str, ' ') && std::getline(is_state, tcp_recv_seq_str, ' ') && std::getline(is_state, app_info_length_str)) {
+        int remote_port = std::stoi(port_str);
+        unsigned int tcp_send_seq = (unsigned int) std::stoul(tcp_send_seq_str);
+        unsigned int tcp_recv_seq = (unsigned int) std::stoul(tcp_recv_seq_str);
+        sockaddr_in addr;
+
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(remote_port);
+        addr.sin_addr.s_addr = inet_addr(ip_str.c_str());
+
+        connect(fd, (sockaddr *) &addr, sizeof(addr));
+
+        setsockopt(fd, SOL_TCP, TCP_REPAIR_QUEUE, &aux_sendq, sizeof(aux_sendq));
+        setsockopt(fd, SOL_TCP, TCP_QUEUE_SEQ, &tcp_send_seq, sizeof(tcp_send_seq));
+        setsockopt(fd, SOL_TCP, TCP_REPAIR_QUEUE, &aux_recvq, sizeof(aux_recvq));
+        setsockopt(fd, SOL_TCP, TCP_QUEUE_SEQ, &tcp_recv_seq, sizeof(tcp_recv_seq));
+
+        ret = TcpRepairOff(fd);
+
+        if (ret < 0) {
+          std::cout << "Failed to repair socket " << ip_str << " " << port_str << std::endl;
+        } else {
+          mappings[client_identifier] = fd;
+        }
+      }
+    } else {
+      std::cout << "Error putting socket " << fd << " into repair mode" << std::endl;
+    }
+  }
+
+  return mappings;
+}
+
+bool TcpRepairOn(int fd) {
+  int aux = 1;
+  if (setsockopt(fd, SOL_TCP, TCP_REPAIR, &aux, sizeof(aux)) < 0) {
+    perror("TcpRepairOn");
+    return false;
+  } else {
+    return true;
+  }
+}
+
+bool TcpRepairOff(int fd) {
+  int aux = 0;
+  if (setsockopt(fd, SOL_TCP, TCP_REPAIR, &aux, sizeof(aux)) < 0) {
+    perror("TcpRepairOff");
+    return false;
+  } else {
+    return true;
+  }
+}
+
+pthread_mutex_t * GetMutex(Context *context, int service_identifier) {
+  pthread_mutex_t *mutex_ptr;
+  pthread_mutex_lock(&context->mutex_map_mutex);
+  auto it = context->local_service_mappings_mutexes.find(service_identifier);
+
+  if (it != context->local_service_mappings_mutexes.end()) {
+    mutex_ptr = it->second;
+  } else {
+    mutex_ptr = new pthread_mutex_t;
+    pthread_mutex_init(mutex_ptr, NULL);
+    context->local_service_mappings_mutexes[service_identifier] = mutex_ptr;
+  }
+  pthread_mutex_unlock(&context->mutex_map_mutex);
+  return mutex_ptr;
+}
+
+pthread_cond_t * GetCond(Context *context, int service_identifier) {
+  pthread_cond_t *cond_ptr;
+  pthread_mutex_lock(&context->cond_map_mutex);
+  auto it = context->fds_ready_conds.find(service_identifier);
+
+  if (it != context->fds_ready_conds.end()) {
+    cond_ptr = it->second;
+  } else {
+    cond_ptr = new pthread_cond_t;
+    pthread_cond_init(cond_ptr, NULL);
+    context->fds_ready_conds[service_identifier] = cond_ptr;
+  }
+  pthread_mutex_unlock(&context->cond_map_mutex);
+
+  return cond_ptr;
 }
 
 int AwaitSocketMessage(int sock) {
@@ -218,6 +432,8 @@ void * HandleLocalDaemonConnection(void * s) {
         }
         int service_identifier = std::stoi(service_ident_ss.str());
 
+        socket_struct->service_identifier = service_identifier;
+
         pthread_mutex_lock(&context->local_services_mutex);
         Service *service;
         auto service_it = context->local_services.find(service_identifier);
@@ -251,6 +467,44 @@ void * HandleLocalDaemonConnection(void * s) {
         for (int i = 0; i < rcvd_fd_count; i++) {
           std::cout << "Descriptor " << i << ": " << fds[i] << std::endl;
         }
+
+        pthread_mutex_t *mutex_ptr = GetMutex(context, socket_struct->service_identifier);
+        pthread_cond_t *cond_ptr = GetCond(context, socket_struct->service_identifier);
+
+        std::cout << "HandleLocalDaemonConnection: " << mutex_ptr << " " << cond_ptr << std::endl;
+
+        pthread_mutex_lock(&context->local_service_mappings_mutex);
+        std::vector<int> *mappings;
+        auto local_service_mappings_it = context->local_service_mappings.find(socket_struct->sock);
+        if (local_service_mappings_it != context->local_service_mappings.end()) {
+          mappings = local_service_mappings_it->second;
+        } else {
+          mappings = new std::vector<int>();
+          context->local_service_mappings[socket_struct->sock] = mappings;
+        }
+        for (int i = 0; i < rcvd_fd_count; i++) {
+          mappings->push_back(fds[i]);
+        }
+        pthread_mutex_unlock(&context->local_service_mappings_mutex);
+
+        pthread_mutex_lock(mutex_ptr);
+        auto service_fds_it = context->service_fds.find(socket_struct->service_identifier);
+        int *fds_arr;
+        if (service_fds_it != context->service_fds.end()) {
+          fds_arr = service_fds_it->second;
+          if (fds_arr != NULL) {
+            delete [] fds_arr;
+          }
+        }
+        fds_arr = new int[rcvd_fd_count];
+        context->service_fds[socket_struct->service_identifier] = fds_arr;
+        for (int i = 0; i < rcvd_fd_count; i++) {
+          fds_arr[i] = fds[i];
+        }
+        context->service_fds_ready[socket_struct->service_identifier] = true;
+        pthread_cond_signal(cond_ptr);
+        pthread_mutex_unlock(mutex_ptr);
+        std::cout << "Processed sockets for " << socket_struct->service_identifier << std::endl;
       } else if (msg_size > 6 && strncmp(buf + i, "SOCKET", 6) == 0) {
         i += 7;
         int fd;
@@ -667,21 +921,62 @@ void * StartFailureDetector(void *c) {
     for (auto it = context->servers.begin(); it != context->servers.end(); it++) {
       server = *it;
 
-      if (server->GetCounter() - context->counter > 3) {
+      if (server->GetStatus() == 1 && context->counter - server->GetCounter() > 3) {
+        server->SetStatus(0);
         std::cout << server->GetIdentifier() << " has failed!" << std::endl;
         std::vector<int> services = server->GetServices();
         for (auto services_it = services.begin(); services_it != services.end(); services_it++) {
           int service_identifier = *services_it;
-          auto service = context->local_services[service_identifier];
+          auto local_service = context->local_services[service_identifier];
 
-          int sock = service->GetLocalSocket();
+          int sock = local_service->GetLocalSocket();
+
+          auto clients = server->GetConnections(service_identifier);
 
           // TODO: Request for sockets from local service
-          // TODO: Send application state to local service
-          // TODO: Repair the sockets
-          // TODO: Send mappings of sockets to client identifiers
+          context->service_fds_ready[service_identifier] = false;
+          SendSocketRequest(sock, service_identifier, clients->size());
+          std::cout << "Socket request sent" << std::endl;
+          pthread_mutex_t *mutex_ptr = GetMutex(context, service_identifier);
+          pthread_cond_t *cond_ptr = GetCond(context, service_identifier);
+          std::cout << "Failure Detector: " << mutex_ptr << " " << cond_ptr << std::endl;
+          pthread_mutex_lock(mutex_ptr);
+          std::cout << "Failure Detector: obtained mutex" << std::endl;
+          while (!context->service_fds_ready[service_identifier]) {
+            std::cout << "Waiting for sockets to be processed" << std::endl;
+            pthread_cond_wait(cond_ptr, mutex_ptr);
+          }
+          context->service_fds_ready[service_identifier] = false;
+          pthread_mutex_unlock(mutex_ptr);
+          std::cout << "Sockets processed, back to failure detector" << std::endl;
+          int *fds = NULL;
+          if (context->service_fds.find(service_identifier) != context->service_fds.end()) {
+            fds = context->service_fds[service_identifier];
+          }
+          if (fds != NULL) {
+            // TODO: Send application state to local service
+            // TODO: Repair the sockets
+            std::cout << "Repairing sockets" << std::endl;
+            auto mappings = RepairSockets(fds, clients->size(), service_identifier, clients);
+            std::cout << "Repaired sockets" << std::endl;
+            // TODO: Send mappings of sockets to client identifiers
+            for (auto mappings_it = mappings.begin(); mappings_it != mappings.end(); mappings_it++) {
+              int client_identifier = mappings_it->first;
+              int fd = mappings_it->second;
+              std::cout << "Sending mapping " << client_identifier << " " << fd << std::endl;
+              SendClientMapping(sock, service_identifier, client_identifier, fd);
+            }
+            SendApplicationStateToService(context, server->GetIdentifier(), service_identifier);
+            for (auto clients_it = clients->begin(); clients_it != clients->end(); clients_it++) {
+              Connection *connection = *clients_it;
+              SendMigrationRequest(connection, context);
+            }
+          }
         }
+      } else if (server->GetStatus() == 1) {
+        std::cout << server->GetIdentifier() << " is alive" << std::endl;
       }
+      context->counter++;
     }
 
     std::this_thread::sleep_for(std::chrono::seconds(5));
@@ -710,6 +1005,11 @@ void InitServer(Context *context) {
 int main() {
   Context *context = new Context;
   std::vector<MigrateServer *> servers;
+  pthread_mutex_init(&context->local_services_mutex, NULL);
+  pthread_mutex_init(&context->local_service_mappings_mutex, NULL);
+  pthread_mutex_init(&context->servers_mutex, NULL);
+  pthread_mutex_init(&context->mutex_map_mutex, NULL);
+  pthread_mutex_init(&context->cond_map_mutex, NULL);
   context->servers = servers;
   Configuration *config = new Configuration(std::string(DEFAULT_CONFIG_FILE));
   config->PrintMappings();

@@ -27,11 +27,19 @@
 
 typedef struct Context {
   std::vector<int> local_sockets;
+  std::unordered_map<int, std::vector<int> *>local_service_mappings;
   std::unordered_map<int, Service *> local_services;
   std::vector<MigrateServer *> servers;
+  std::unordered_map<int, pthread_mutex_t *> local_service_mappings_mutexes;
+  std::unordered_map<int, pthread_cond_t *> fds_ready_conds;
+  std::unordered_map<int, int *> service_fds;
+  std::unordered_map<int, bool> service_fds_ready;
   Configuration *config;
   pthread_mutex_t local_services_mutex;
+  pthread_mutex_t local_service_mappings_mutex;
   pthread_mutex_t servers_mutex;
+  pthread_mutex_t mutex_map_mutex;
+  pthread_mutex_t cond_map_mutex;
   int counter;
 } Context;
 
@@ -39,13 +47,22 @@ typedef struct LocalDaemonSocket {
   int sock;
   sockaddr_un *addr;
   Context *context;
+  int service_identifier;
 } LocalDaemonSocket;
 
 void InitServer();
 void CleanUpSocketStruct(LocalDaemonSocket *socket_struct);
 int AwaitSocketMessage(int sock);
 int AwaitSocketMessages(int sock, int *fds, int fd_count);
-void SendApplicationStateToService(Context *context, int service_identifier);
+void SendApplicationStateToService(Context *context, std::string server_identifier, int service_identifier);
+void SendMigrationRequest(Connection *connection, Context *context);
+void SendSocketRequest(int sock, int count);
+void SendClientMapping(int sock, int service_identifier, int client_identifier, int fd);
+std::unordered_map<int, int> RepairSockets(int fds, int fd_count, std::unordered_map<int, StateData *> *clients);
+bool TcpRepairOn(int fd);
+bool TcpRepairOff(int fd);
+pthread_mutex_t * GetMutex(Context *context, int service_identifier);
+pthread_cond_t * GetCond(Context *context, int service_identifier);
 void * HandleLocalDaemonConnection(void *s);
 void * StartLocalDaemon(void *c);
 void * StartHeartbeatSender(void *c);

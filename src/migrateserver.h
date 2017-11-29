@@ -13,6 +13,7 @@ class MigrateServer {
   std::vector<int> m_services;
   std::unordered_map<int, std::vector<Connection *> *> m_connections;
   int m_counter;
+  int m_status;
 
 public:
   MigrateServer(std::string identifier);
@@ -28,6 +29,8 @@ public:
   int GetCounter();
   void SetCounter(int counter);
   void IncrementCounter();
+  int GetStatus();
+  void SetStatus(int status);
 };
 
 #endif

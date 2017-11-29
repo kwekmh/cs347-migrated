@@ -6,6 +6,7 @@
 
 MigrateServer::MigrateServer(std::string identifier) {
   this->m_identifier = identifier;
+  this->m_status = 1;
 }
 
 MigrateServer::~MigrateServer() {
@@ -89,4 +90,12 @@ void MigrateServer::SetCounter(int counter) {
 
 void MigrateServer::IncrementCounter() {
   this->m_counter++;
+}
+
+int MigrateServer::GetStatus() {
+  return this->m_status;
+}
+
+void MigrateServer::SetStatus(int status) {
+  this->m_status = status;
 }
