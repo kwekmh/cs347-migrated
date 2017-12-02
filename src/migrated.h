@@ -57,6 +57,7 @@ int AwaitSocketMessages(int sock, int *fds, int fd_count);
 void SendApplicationStateToService(Context *context, std::string server_identifier, int service_identifier);
 void SendMigrationRequest(Connection *connection, Context *context);
 void SendSocketRequest(int sock, int count);
+void SendMessage(int sock, int service_identifier, std::string in_msg);
 void SendClientMapping(int sock, int service_identifier, int client_identifier, int fd);
 std::unordered_map<int, int> RepairSockets(int fds, int fd_count, std::unordered_map<int, StateData *> *clients);
 bool TcpRepairOn(int fd);

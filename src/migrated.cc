@@ -106,8 +106,12 @@ void SendMigrationRequest(Connection *connection, Context *context) {
   std::string port_str;
   std::string tcp_send_seq_str;
   std::string tcp_recv_seq_str;
+  std::string mss_clamp_str;
+  std::string snd_wscale_str;
+  std::string rcv_wscale_str;
+  std::string timestamp_str;
   std::string app_info_length_str;
-  if (std::getline(is_state, ip_str, ' ') && std::getline(is_state, port_str, ' ') && std::getline(is_state, tcp_send_seq_str, ' ') && std::getline(is_state, tcp_recv_seq_str, ' ') && std::getline(is_state, app_info_length_str)) {
+  if (std::getline(is_state, ip_str, ' ') && std::getline(is_state, port_str, ' ') && std::getline(is_state, tcp_send_seq_str, ' ') && std::getline(is_state, tcp_recv_seq_str, ' ') && std::getline(is_state, mss_clamp_str, ' ') && std::getline(is_state, snd_wscale_str, ' ') && std::getline(is_state, rcv_wscale_str, ' ') && std::getline(is_state, timestamp_str, ' ') && std::getline(is_state, app_info_length_str, ' ')) {
     int client_port = std::stoi(context->config->Get(std::string("CLIENT_PORT")));
     std::string local_ip = context->config->Get(std::string("IP_ADDRESS"));
 
@@ -167,6 +171,25 @@ void SendSocketRequest(int sock, int service_identifier, int count) {
   }
 }
 
+void SendMessage(int sock, int service_identifier, std::string in_msg) {
+  std::stringstream msgstream;
+
+  msgstream << in_msg << " " << service_identifier;
+
+  std::string msg = msgstream.str();
+
+  msgstream.str("");
+  msgstream.clear();
+
+  msgstream << msg.length() << " " << msg;
+
+  msg = msgstream.str();
+
+  if (send(sock, msg.c_str(), msg.length(), 0) < 0) {
+    perror("SendMessage() send");
+  }
+}
+
 void SendClientMapping(int sock, int service_identifier, int client_identifier, int fd) {
   std::stringstream msgstream;
 
@@ -194,16 +217,22 @@ std::unordered_map<int, int> RepairSockets(int *fds, int fd_count, int service_i
   auto clients_it = clients->begin();
   for (int i = 0; i < fd_count && clients_it != clients->end(); i++, clients_it++) {
     int fd = fds[i];
+    std::cout << "Repairing socket " << fd << std::endl;
     if (TcpRepairOn(fd)) {
       Connection *connection = *clients_it;
       int client_identifier = connection->GetConnectionIdentifier();
+      std::cout << "Repairing to: " << std::string(connection->GetState(), connection->GetStateSize()) << std::endl;
       std::istringstream is_state(std::string(connection->GetState(), connection->GetStateSize()));
       std::string ip_str;
       std::string port_str;
       std::string tcp_send_seq_str;
       std::string tcp_recv_seq_str;
+      std::string mss_clamp_str;
+      std::string snd_wscale_str;
+      std::string rcv_wscale_str;
+      std::string timestamp_str;
       std::string app_info_length_str;
-      if (std::getline(is_state, ip_str, ' ') && std::getline(is_state, port_str, ' ') && std::getline(is_state, tcp_send_seq_str, ' ') && std::getline(is_state, tcp_recv_seq_str, ' ') && std::getline(is_state, app_info_length_str)) {
+      if (std::getline(is_state, ip_str, ' ') && std::getline(is_state, port_str, ' ') && std::getline(is_state, tcp_send_seq_str, ' ') && std::getline(is_state, tcp_recv_seq_str, ' ') && std::getline(is_state, mss_clamp_str, ' ') && std::getline(is_state, snd_wscale_str, ' ') && std::getline(is_state, rcv_wscale_str, ' ') && std::getline(is_state, timestamp_str, ' ') && std::getline(is_state, app_info_length_str, ' ')) {
         int remote_port = std::stoi(port_str);
         unsigned int tcp_send_seq = (unsigned int) std::stoul(tcp_send_seq_str);
         unsigned int tcp_recv_seq = (unsigned int) std::stoul(tcp_recv_seq_str);
@@ -221,7 +250,47 @@ std::unordered_map<int, int> RepairSockets(int *fds, int fd_count, int service_i
         setsockopt(fd, SOL_TCP, TCP_REPAIR_QUEUE, &aux_recvq, sizeof(aux_recvq));
         setsockopt(fd, SOL_TCP, TCP_QUEUE_SEQ, &tcp_recv_seq, sizeof(tcp_recv_seq));
 
+        uint32_t mss_clamp = (uint32_t) std::stoul(mss_clamp_str);
+        uint32_t snd_wscale = (uint32_t) std::stoul(snd_wscale_str);
+        uint32_t rcv_wscale = (uint32_t) std::stoul(rcv_wscale_str);
+        uint32_t timestamp = (uint32_t) std::stoul(timestamp_str);
+
+        struct tcp_repair_opt opts[4];
+
+        // SACK
+        opts[0].opt_code = TCPOPT_SACK_PERMITTED;
+        opts[0].opt_val = 0;
+
+        // Window scales
+        opts[1].opt_code = TCPOPT_WINDOW;
+        opts[1].opt_val = snd_wscale + (rcv_wscale << 16);
+
+        // Timestamps
+        opts[2].opt_code = TCPOPT_TIMESTAMP;
+        opts[2].opt_val = 0;
+
+        // MSS clamp
+        opts[3].opt_code = TCPOPT_MAXSEG;
+        opts[3].opt_val = mss_clamp;
+
+        setsockopt(fd, SOL_TCP, TCP_REPAIR_OPTIONS, opts, 4 * sizeof(struct tcp_repair_opt));
+
+        setsockopt(fd, SOL_TCP, TCP_TIMESTAMP, &timestamp, sizeof(timestamp));
+
         ret = TcpRepairOff(fd);
+
+        // START OF DEBUG CODE
+        sockaddr_in peer_addr;
+        socklen_t peer_addr_len = sizeof(peer_addr);
+
+        getpeername(fd, (sockaddr *) &peer_addr, &peer_addr_len);
+
+        char new_ip_str[INET_ADDRSTRLEN];
+
+        inet_ntop(AF_INET, &(peer_addr.sin_addr), new_ip_str, INET_ADDRSTRLEN);
+
+        std::cout << "New peer address after reparation: " << new_ip_str << std::endl;
+        // END OF DEBUG CODE
 
         if (ret < 0) {
           std::cout << "Failed to repair socket " << ip_str << " " << port_str << std::endl;
@@ -921,7 +990,7 @@ void * StartFailureDetector(void *c) {
     for (auto it = context->servers.begin(); it != context->servers.end(); it++) {
       server = *it;
 
-      if (server->GetStatus() == 1 && context->counter - server->GetCounter() > 3) {
+      if (server->GetStatus() == 1 && context->counter - server->GetCounter() > 10) {
         server->SetStatus(0);
         std::cout << server->GetIdentifier() << " has failed!" << std::endl;
         std::vector<int> services = server->GetServices();
@@ -967,6 +1036,7 @@ void * StartFailureDetector(void *c) {
               SendClientMapping(sock, service_identifier, client_identifier, fd);
             }
             SendApplicationStateToService(context, server->GetIdentifier(), service_identifier);
+            SendMessage(sock, service_identifier, std::string("DONE"));
             for (auto clients_it = clients->begin(); clients_it != clients->end(); clients_it++) {
               Connection *connection = *clients_it;
               SendMigrationRequest(connection, context);
@@ -979,7 +1049,7 @@ void * StartFailureDetector(void *c) {
       context->counter++;
     }
 
-    std::this_thread::sleep_for(std::chrono::seconds(5));
+    std::this_thread::sleep_for(std::chrono::seconds(1));
   }
 
   return NULL;
