@@ -210,6 +210,7 @@ void SendClientMapping(int sock, int service_identifier, int client_identifier, 
 }
 
 std::unordered_map<int, int> RepairSockets(int *fds, int fd_count, int service_identifier, std::vector<Connection *> *clients) {
+  // Set up constants for setsockopt
   int aux_sendq = TCP_SEND_QUEUE;
   int aux_recvq = TCP_RECV_QUEUE;
   int ret;
@@ -222,6 +223,7 @@ std::unordered_map<int, int> RepairSockets(int *fds, int fd_count, int service_i
       Connection *connection = *clients_it;
       int client_identifier = connection->GetConnectionIdentifier();
       std::cout << "Repairing to: " << std::string(connection->GetState(), connection->GetStateSize()) << std::endl;
+      // Parse the state data and put the values into the respective strings
       std::istringstream is_state(std::string(connection->GetState(), connection->GetStateSize()));
       std::string ip_str;
       std::string port_str;
@@ -245,6 +247,7 @@ std::unordered_map<int, int> RepairSockets(int *fds, int fd_count, int service_i
 
         connect(fd, (sockaddr *) &addr, sizeof(addr));
 
+        // Configure the desired options for the socket
         setsockopt(fd, SOL_TCP, TCP_REPAIR_QUEUE, &aux_sendq, sizeof(aux_sendq));
         setsockopt(fd, SOL_TCP, TCP_QUEUE_SEQ, &tcp_send_seq, sizeof(tcp_send_seq));
         setsockopt(fd, SOL_TCP, TCP_REPAIR_QUEUE, &aux_recvq, sizeof(aux_recvq));
@@ -361,7 +364,7 @@ pthread_cond_t * GetCond(Context *context, int service_identifier) {
 
 int AwaitSocketMessage(int sock) {
   std::cout << "Awaiting descriptor on " << sock << std::endl;
-  //char buf[SOCK_BUF_MAX_SIZE];
+  // A special message needs to be constructed to receive sockets from another process
   struct {
     struct cmsghdr h;
     int fd[1];
@@ -406,7 +409,7 @@ int AwaitSocketMessage(int sock) {
 int AwaitSocketMessages(int sock, int *fds, int fd_count) {
   std::cout << "Awaiting " << fd_count << " descriptor(s) on " << sock << std::endl;
   int i;
-  //char buf[SOCK_BUF_MAX_SIZE];
+  // A special message needs to be constructed to receive sockets from another process
   struct {
     struct cmsghdr h;
     int fd[SOCK_BUF_MAX_SIZE];
@@ -544,6 +547,7 @@ void * HandleLocalDaemonConnection(void * s) {
 
         pthread_mutex_lock(&context->local_service_mappings_mutex);
         std::vector<int> *mappings;
+        // Locate the corresponding service
         auto local_service_mappings_it = context->local_service_mappings.find(socket_struct->sock);
         if (local_service_mappings_it != context->local_service_mappings.end()) {
           mappings = local_service_mappings_it->second;
@@ -556,6 +560,7 @@ void * HandleLocalDaemonConnection(void * s) {
         }
         pthread_mutex_unlock(&context->local_service_mappings_mutex);
 
+        // Update the saved file descriptors for that service
         pthread_mutex_lock(mutex_ptr);
         auto service_fds_it = context->service_fds.find(socket_struct->service_identifier);
         int *fds_arr;
@@ -585,7 +590,6 @@ void * HandleLocalDaemonConnection(void * s) {
         }
       } else if (msg_size > 5 && strncmp(buf + i, "STATE", 5) == 0) {
         // State information received from application
-
         std::stringstream service_ss;
         std::stringstream conn_ident_ss;
         StateData *state_data;
@@ -806,7 +810,7 @@ void * StartHeartbeatSender(void *c) {
         }
       }
     }
-    std::this_thread::sleep_for(std::chrono::seconds(5));
+    std::this_thread::sleep_for(std::chrono::seconds(context->state_update_interval));
   }
 
   return NULL;
@@ -990,7 +994,7 @@ void * StartFailureDetector(void *c) {
     for (auto it = context->servers.begin(); it != context->servers.end(); it++) {
       server = *it;
 
-      if (server->GetStatus() == 1 && context->counter - server->GetCounter() > 10) {
+      if (server->GetStatus() == 1 && context->counter - server->GetCounter() > context->failure_interval) {
         server->SetStatus(0);
         std::cout << server->GetIdentifier() << " has failed!" << std::endl;
         std::vector<int> services = server->GetServices();
@@ -1002,13 +1006,15 @@ void * StartFailureDetector(void *c) {
 
           auto clients = server->GetConnections(service_identifier);
 
-          // TODO: Request for sockets from local service
+          // Request for sockets from local service
           context->service_fds_ready[service_identifier] = false;
           SendSocketRequest(sock, service_identifier, clients->size());
           std::cout << "Socket request sent" << std::endl;
           pthread_mutex_t *mutex_ptr = GetMutex(context, service_identifier);
           pthread_cond_t *cond_ptr = GetCond(context, service_identifier);
           std::cout << "Failure Detector: " << mutex_ptr << " " << cond_ptr << std::endl;
+          // Pause and wait for the sockets to be received
+          // Sockets are received on a separate thread which manages the processing of messages
           pthread_mutex_lock(mutex_ptr);
           std::cout << "Failure Detector: obtained mutex" << std::endl;
           while (!context->service_fds_ready[service_identifier]) {
@@ -1023,12 +1029,10 @@ void * StartFailureDetector(void *c) {
             fds = context->service_fds[service_identifier];
           }
           if (fds != NULL) {
-            // TODO: Send application state to local service
-            // TODO: Repair the sockets
             std::cout << "Repairing sockets" << std::endl;
             auto mappings = RepairSockets(fds, clients->size(), service_identifier, clients);
             std::cout << "Repaired sockets" << std::endl;
-            // TODO: Send mappings of sockets to client identifiers
+            // Send mappings of sockets to client identifiers
             for (auto mappings_it = mappings.begin(); mappings_it != mappings.end(); mappings_it++) {
               int client_identifier = mappings_it->first;
               int fd = mappings_it->second;
@@ -1036,7 +1040,9 @@ void * StartFailureDetector(void *c) {
               SendClientMapping(sock, service_identifier, client_identifier, fd);
             }
             SendApplicationStateToService(context, server->GetIdentifier(), service_identifier);
+            // Tell the service the migration is complete
             SendMessage(sock, service_identifier, std::string("DONE"));
+            // Tell all clients connected to the original server to migrate to this server
             for (auto clients_it = clients->begin(); clients_it != clients->end(); clients_it++) {
               Connection *connection = *clients_it;
               SendMigrationRequest(connection, context);
@@ -1056,6 +1062,8 @@ void * StartFailureDetector(void *c) {
 }
 
 void InitServer(Context *context) {
+
+  // Start the various listening services, each on its own thread
   pthread_t hb_sender_pthread;
   pthread_t hb_listener_pthread;
   pthread_t local_daemon_pthread;
@@ -1073,17 +1081,40 @@ void InitServer(Context *context) {
 }
 
 int main() {
+  // Create the container for global state for the daemon
   Context *context = new Context;
   std::vector<MigrateServer *> servers;
+
+  // Set up the mutexes
   pthread_mutex_init(&context->local_services_mutex, NULL);
   pthread_mutex_init(&context->local_service_mappings_mutex, NULL);
   pthread_mutex_init(&context->servers_mutex, NULL);
   pthread_mutex_init(&context->mutex_map_mutex, NULL);
   pthread_mutex_init(&context->cond_map_mutex, NULL);
   context->servers = servers;
+
+  // Parse the configuration file
   Configuration *config = new Configuration(std::string(DEFAULT_CONFIG_FILE));
   config->PrintMappings();
   context->config = config;
+
+  // Set the state update (heartbeat) and failure intervals
+  if (config->HasKey(std::string("STATE_UPDATE_INTERVAL"))) {
+    context->state_update_interval = std::stoi(config->Get(std::string("STATE_UPDATE_INTERVAL")));
+  } else {
+    context->state_update_interval = DEFAULT_STATE_UPDATE_INTERVAL;
+  }
+
+  std::cout << "State update interval set to " << context->state_update_interval << " second(s)" << std::endl;
+
+  if (config->HasKey(std::string("FAILURE_INTERVAL"))) {
+    context->failure_interval = std::stoi(config->Get(std::string("FAILURE_INTERVAL")));
+  } else {
+    context->failure_interval = DEFAULT_FAILURE_INTERVAL;
+  }
+
+  std::cout << "Failure interval set to " << context->failure_interval << " second(s)" << std::endl;
+
   InitServer(context);
   return 0;
 }

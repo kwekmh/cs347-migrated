@@ -19,6 +19,8 @@
 #define SOCK_BUF_MAX_SIZE 960
 
 #define DEFAULT_CONFIG_FILE STR_VALUE(/etc/migrated/config)
+#define DEFAULT_STATE_UPDATE_INTERVAL 1
+#define DEFAULT_FAILURE_INTERVAL 10
 
 #include <vector>
 #include <unordered_map>
@@ -41,6 +43,8 @@ typedef struct Context {
   pthread_mutex_t mutex_map_mutex;
   pthread_mutex_t cond_map_mutex;
   int counter;
+  int state_update_interval;
+  int failure_interval;
 } Context;
 
 typedef struct LocalDaemonSocket {
